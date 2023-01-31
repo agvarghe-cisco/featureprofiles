@@ -121,9 +121,11 @@ var (
 
 	ExplicitP4RTNodeComponent = flag.Bool("deviation_explicit_p4rt_node_component", false, "Device does not report P4RT node names in the component hierarchy, so use hard coded P4RT node names by passing them through internal/args flags. Fully compliant devices should report the PORT hardware components with the INTEGRATED_CIRCUIT components as their parents, as the P4RT node names.")
 
-	RoutePolicyUnderPeerGroup = flag.Bool("deviation_rpl_under_peergroup", false, "Device requires route-policy configuration under bgp peer-group. Fully-compliant devices should pass with and without this deviation.")
+	RoutePolicyUnderPeerGroup = flag.Bool("deviation_rpl_under_peergroup", true, "Device requires route-policy configuration under bgp peer-group. Fully-compliant devices should pass with and without this deviation.")
 
 	MissingPrePolicyReceivedRoutes = flag.Bool("deviation_prepolicy_received_routes", false, "Device does not support bgp/neighbors/neighbor/afi-safis/afi-safi/state/prefixes/received-pre-policy. Fully-compliant devices should pass with and without this deviation.")
 
 	RoutePolicyUnderNeighborAfiSafi = flag.Bool("deviation_rpl_under_neighbor_afisafi", false, "Device requires route-policy configuration under bgp neighbor afisafi. Fully-compliant devices should pass with this deviation set to true.")
+
+	VerifyBGPNotEstablished = flag.Bool("deviation_bgp_not_established", false, "aj")
 )

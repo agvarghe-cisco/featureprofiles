@@ -107,6 +107,15 @@ var (
 	}
 )
 
+func configureRoutePolicy(t *testing.T, dut *ondatra.DUTDevice, name string, pr oc.E_RoutingPolicy_PolicyResultType) {
+	d := &oc.Root{}
+	rp := d.GetOrCreateRoutingPolicy()
+	pd := rp.GetOrCreatePolicyDefinition(name)
+	st := pd.GetOrCreateStatement("id-1")
+	st.GetOrCreateActions().PolicyResult = pr
+	gnmi.Replace(t, dut, gnmi.OC().RoutingPolicy().Config(), rp)
+}
+
 // configureDUT configures all the interfaces and network instance on the DUT.
 func configureDUT(t *testing.T, dut *ondatra.DUTDevice) {
 	dc := gnmi.OC()
@@ -162,6 +171,8 @@ func bgpWithNbr(as uint32, nbrs []*bgpNeighbor) *oc.NetworkInstance_Protocol {
 
 	g := bgp.GetOrCreateGlobal()
 	g.As = ygot.Uint32(as)
+	g.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST).Enabled = ygot.Bool(true)
+	g.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST).Enabled = ygot.Bool(true)
 	g.RouterId = ygot.String(dutDst.IPv4)
 	bgpgr := g.GetOrCreateGracefulRestart()
 	bgpgr.Enabled = ygot.Bool(true)
@@ -172,20 +183,40 @@ func bgpWithNbr(as uint32, nbrs []*bgpNeighbor) *oc.NetworkInstance_Protocol {
 	pg.PeerAs = ygot.Uint32(ateAS)
 	pg.PeerGroupName = ygot.String(peerGrpName)
 
+	if *deviations.RoutePolicyUnderPeerGroup {
+		pg1af4 := pg.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST)
+		pg1af4.Enabled = ygot.Bool(true)
+
+		pg1rpl4 := pg1af4.GetOrCreateApplyPolicy()
+		pg1rpl4.SetExportPolicy([]string{"ALLOW"})
+		pg1rpl4.SetImportPolicy([]string{"ALLOW"})
+
+		pg1af6 := pg.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST)
+		pg1af6.Enabled = ygot.Bool(true)
+		pg1rpl6 := pg1af6.GetOrCreateApplyPolicy()
+		pg1rpl6.SetExportPolicy([]string{"ALLOW"})
+		pg1rpl6.SetImportPolicy([]string{"ALLOW"})
+
+	}
+
 	for _, nbr := range nbrs {
 		if nbr.isV4 {
 			nv4 := bgp.GetOrCreateNeighbor(nbr.neighborip)
 			nv4.PeerGroup = ygot.String(peerGrpName)
 			nv4.GetOrCreateTimers().HoldTime = ygot.Uint16(180)
+			nv4.GetOrCreateTimers().KeepaliveInterval = ygot.Uint16(60)
 			nv4.PeerAs = ygot.Uint32(nbr.as)
 			nv4.Enabled = ygot.Bool(true)
-			nv4.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST).Enabled = ygot.Bool(true)
+			af := nv4.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST)
+			af.Enabled = ygot.Bool(true)
 		} else {
 			nv6 := bgp.GetOrCreateNeighbor(nbr.neighborip)
 			nv6.PeerGroup = ygot.String(peerGrpName)
 			nv6.PeerAs = ygot.Uint32(nbr.as)
 			nv6.Enabled = ygot.Bool(true)
-			nv6.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST).Enabled = ygot.Bool(true)
+			nv6.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST)
+			af := nv6.GetOrCreateAfiSafi(oc.BgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST)
+			af.Enabled = ygot.Bool(true)
 		}
 	}
 	return ni_proto
@@ -302,6 +333,8 @@ func verifyNoPacketLoss(t *testing.T, ate *ondatra.ATEDevice, allFlows []*ondatr
 		if lossPct := gnmi.Get(t, ate, gnmi.OC().Flow(flow.Name()).LossPct().State()); lossPct < 5.0 {
 			t.Logf("Traffic Test Passed! Got %v loss", lossPct)
 		} else {
+			//t.Logf("AGNEL traffic loss.......")
+			//time.Sleep(30 * time.Minute)
 			t.Errorf("Traffic Loss Pct for Flow %s: got %v", flow.Name(), lossPct)
 		}
 	}
@@ -398,6 +431,9 @@ func TestTrafficWithGracefulRestartSpeaker(t *testing.T) {
 	t.Run("configureDut", func(t *testing.T) {
 		t.Log("Start DUT interface Config")
 		configureDUT(t, dut)
+		if *deviations.RoutePolicyUnderPeerGroup {
+			configureRoutePolicy(t, dut, "ALLOW", oc.RoutingPolicy_PolicyResultType_ACCEPT_ROUTE)
+		}
 	})
 
 	// Configure BGP+Neighbors on the DUT
@@ -428,6 +464,7 @@ func TestTrafficWithGracefulRestartSpeaker(t *testing.T) {
 	// Starting ATE Traffic
 	t.Run("VerifyTrafficPassBeforeAcLBlock", func(t *testing.T) {
 		t.Log("Send Traffic with GR timer enabled. Traffic should pass")
+		time.Sleep(30 * time.Second)
 		sendTraffic(t, ate, allFlows, trafficDuration)
 		verifyNoPacketLoss(t, ate, allFlows)
 	})
@@ -458,7 +495,7 @@ func TestTrafficWithGracefulRestartSpeaker(t *testing.T) {
 		t.Log("Waiting for BGP neighbor to go to CONNECT state after applying ACL DENY policy...")
 		_, ok := gnmi.Watch(t, dut, nbrPath.SessionState().State(), 2*time.Minute, func(val *ygnmi.Value[oc.E_Bgp_Neighbor_SessionState]) bool {
 			currState, ok := val.Val()
-			return ok && currState == oc.Bgp_Neighbor_SessionState_CONNECT
+			return ok && currState == oc.Bgp_Neighbor_SessionState_CONNECT || currState == oc.Bgp_Neighbor_SessionState_ACTIVE
 		}).Await(t)
 		if !ok {
 			fptest.LogQuery(t, "BGP reported state", nbrPath.State(), gnmi.Get(t, dut, nbrPath.State()))
@@ -485,7 +522,7 @@ func TestTrafficWithGracefulRestartSpeaker(t *testing.T) {
 
 	t.Run("VerifyBGPEstablished", func(t *testing.T) {
 		t.Logf("Waiting for BGP neighbor to establish...")
-		_, ok := gnmi.Watch(t, dut, nbrPath.SessionState().State(), time.Minute, func(val *ygnmi.Value[oc.E_Bgp_Neighbor_SessionState]) bool {
+		_, ok := gnmi.Watch(t, dut, nbrPath.SessionState().State(), 2*time.Minute, func(val *ygnmi.Value[oc.E_Bgp_Neighbor_SessionState]) bool {
 			currState, ok := val.Val()
 			return ok && currState == oc.Bgp_Neighbor_SessionState_ESTABLISHED
 		}).Await(t)

@@ -507,7 +507,7 @@ func (tc *testCase) run(t *testing.T, conf *config, dut *ondatra.DUTDevice, ate 
 	t.Log("Verify Traffic statistics")
 	if tc.name == "OverLimit" {
 		trafficDuration = trafficDuration - time.Duration(elapsed.Nanoseconds())
-		trafficDuration = time.Duration(5000000000 * time.Nanosecond)
+		trafficDuration = trafficDuration - time.Duration(5000000000*time.Nanosecond)
 	}
 	sendTraffic(t, ate, conf.allFlows, trafficDuration)
 	if tc.wantNoPacketLoss {
